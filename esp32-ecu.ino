@@ -5,36 +5,40 @@
 #include "WiFiClient.h"
 #include "WiFiAP.h"
 #include "wavTrigger.h"
-#include "Servo.h"
 #include "AsyncTCP.h"
 #include "neotimer.h"
+#include "ezButton.h"
+#include <ESP32Servo.h>
 
 HardwareSerial MySerial(2);
 
+//Servo servo;
+int servoPin = 32;
 Servo servo;
-int servoPin = 13;
 
 /*** Variables ***/
 // Buttons
+ezButton GREEN_BUTTON_PIN (14);
+ezButton YELLOW_BUTTON_PIN (27);
+ezButton RED_BUTTON_PIN (26);
+
 #define RED_LED_PIN 18
-#define RED_BUTTON_PIN 14
+//#define RED_BUTTON_PIN 26
 #define YELLOW_LED_PIN 19
-#define YELLOW_BUTTON_PIN 27
-#define GREEN_LED_PIN 26
-#define GREEN_BUTTON_PIN 25
+//#define YELLOW_BUTTON_PIN 27
+#define GREEN_LED_PIN 25
+//#define GREEN_BUTTON_PIN 14
 
 // Trap
-#define TRAP_TRIGGER 5
-#define TRAP_PUMP 25
-//#define TRAP_LIGHT
+#define TRAP_TRIGGER 4
+#define TRAP_LIGHT 22
 
 // Main Lever
-#define MAIN_LEVER 4
+#define MAIN_LEVER 5
 
 // Cutoff Process
 #define CUTOFF_LEVER 33
-#define VENT_SMOKER 23
-#define CUTOFF_PUMP 22
+#define VENT_SMOKER 13
 #define VENT_FAN_LIGHT 12
 
 // Top LEDS
@@ -42,7 +46,7 @@ int servoPin = 13;
 #define TOP_RED_LED 2
 
 // Needle Gauge Meter
-#define NEEDLE_GAUGE 13
+#define NEEDLE_GAUGE 35
 unsigned long NEEDLEpreviousMillis = 0;
 unsigned long NEEDLEcurrentMillis;
 
@@ -52,10 +56,31 @@ int trapInsert = 0;
 int lasttrapState = HIGH; // the previous state from the input pin
 int trapState;     // the current reading from the input pin
 
+//String ssid;
+String pass;
+
 // Replace with your network credentials
-const char* ssid = "Ecto Containment Unit";
+
+String ssid = "Ecto Containment Unit";
 //const char* password = "Ghostbusters84!";
 const char* password = NULL;
+
+// Search for parameter in HTTP POST request
+const char* SSID_INPUT = "ssid";
+const char* PASS_INPUT = "pass";
+const char* VENT_INPUT = "ventnum";
+const char* ONOFF_INPUT = "ventonoff";
+
+String onoff;
+String ventnum;
+int ventThreshNum;
+String ventThreshSTG;
+
+// File paths to save input values permanently
+const char* ssidPath = "/ssid.txt";
+const char* passPath = "/pass.txt";
+const char* ventPath = "/vent.txt";
+const char* onoffPath = "/onoff.txt";
 
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
@@ -80,7 +105,7 @@ const long interval = 10500;
 unsigned long currentMillis;
 unsigned long REDTOPcurrentMillis;
 int count = 0;
-bool shutdownstate = 0; 
+bool shutdownstate = 0;
 
 #define RX2 16
 #define TX2 17
@@ -101,12 +126,27 @@ static enum {
   SLEEP
 } state = READY;
 
-String processor(const String& var){
- 
+String processor(const String& var) {
+
+  if (var == "SSID") {
+    return ssid;
+  } else if (var == "PASS") {
+    return pass;
+  }
+
   return String();
 }
 
-void setup(){
+String processor2(const String& var) {
+
+  //  if (var == "VENTNUM"){
+  //    return ventnum;
+  //  }
+
+  return String();
+}
+
+void setup() {
 
   Serial.begin(115200);
   servo.attach(servoPin);
@@ -118,117 +158,168 @@ void setup(){
   WiFi.softAP(ssid, password);
   IPAddress myIP = WiFi.softAPIP();
   Serial.print("AP IP address: ");
-  Serial.println(myIP);
+  //Serial.println(myIP);
   delay(1000);
 
   Serial.println("Server started");
 
   // Initialize SPIFFS
-  if(!SPIFFS.begin(true)){
+  if (!SPIFFS.begin(true)) {
     Serial.println("An Error has occurred while mounting SPIFFS");
     return;
   }
 
   // Route for root / web page
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
-    request->send(SPIFFS, "/index.html", String(), false, processor);
+  server.on("/", HTTP_GET, [](AsyncWebServerRequest * request) {
+    request->send(SPIFFS, "/index.html");
   });
-  
+
   // Route to load style.css file
-  server.on("/style.css", HTTP_GET, [](AsyncWebServerRequest *request){
+  server.on("/style.css", HTTP_GET, [](AsyncWebServerRequest * request) {
     request->send(SPIFFS, "/style.css", "text/css");
   });
 
-  server.on("/heading.png", HTTP_GET, [](AsyncWebServerRequest *request){
+  server.on("/heading.png", HTTP_GET, [](AsyncWebServerRequest * request) {
     request->send(SPIFFS, "/heading.png", "image/png");
   });
 
-  server.on("/byline.png", HTTP_GET, [](AsyncWebServerRequest *request){
+  server.on("/byline.png", HTTP_GET, [](AsyncWebServerRequest * request) {
     request->send(SPIFFS, "/byline.png", "image/png");
-  });  
+  });
 
-  server.on("/ecu.png", HTTP_GET, [](AsyncWebServerRequest *request){
+  server.on("/ecu.png", HTTP_GET, [](AsyncWebServerRequest * request) {
     request->send(SPIFFS, "/ecu.png", "image/png");
-  });  
+  });
 
-  server.on("/cinder-block.jpg", HTTP_GET, [](AsyncWebServerRequest *request){
+  server.on("/cinder-block.jpg", HTTP_GET, [](AsyncWebServerRequest * request) {
     request->send(SPIFFS, "/cinder-block.jpg", "image/jpeg");
   });
 
+  server.on("/slime.jpg", HTTP_GET, [](AsyncWebServerRequest * request) {
+    request->send(SPIFFS, "/slime.jpg", "image/jpeg");
+  });
+
+  server.on("/ecto-1.png", HTTP_GET, [](AsyncWebServerRequest * request) {
+    request->send(SPIFFS, "/ecto-1.png", "image/png");
+  });
+
   // Route to set GPIO to LOW
-  server.on("/ready", HTTP_GET, [](AsyncWebServerRequest *request){  
+  server.on("/ready", HTTP_GET, [](AsyncWebServerRequest * request) {
     request->send(SPIFFS, "/index.html");
     remoteReady();
   });
 
   // Route to set GPIO to LOW
-  server.on("/shut-down", HTTP_GET, [](AsyncWebServerRequest *request){  
+  server.on("/shut-down", HTTP_GET, [](AsyncWebServerRequest * request) {
     request->send(SPIFFS, "/index.html");
     remoteShutDown();
   });
 
   // Route to set GPIO to HIGH
-  server.on("/vent", HTTP_GET, [](AsyncWebServerRequest *request){  
+  server.on("/vent", HTTP_GET, [](AsyncWebServerRequest * request) {
     request->send(SPIFFS, "/index.html");
     remoteVent();
   });
 
   // Route to set GPIO to LOW
-  server.on("/sleep", HTTP_GET, [](AsyncWebServerRequest *request){   
+  server.on("/sleep", HTTP_GET, [](AsyncWebServerRequest * request) {
     request->send(SPIFFS, "/index.html");
     remoteSleep();
-  });  
+  });
 
   // Route to set GPIO to LOW
-  server.on("/ecto", HTTP_GET, [](AsyncWebServerRequest *request){
+  server.on("/ecto", HTTP_GET, [](AsyncWebServerRequest * request) {
     request->send(SPIFFS, "/index.html");
     remoteEcto();
   });
 
   // Route to set GPIO to LOW
-  server.on("/slimer", HTTP_GET, [](AsyncWebServerRequest *request){   
+  server.on("/alarm", HTTP_GET, [](AsyncWebServerRequest * request) {
     request->send(SPIFFS, "/index.html");
-    remoteSlimer();
-  }); 
+    remoteAlarm();
+  });
 
   // Route to set GPIO to LOW
-  server.on("/settings", HTTP_GET, [](AsyncWebServerRequest *request){   
-    request->send(SPIFFS, "/settings.html");
-  }); 
+  server.on("/slimer", HTTP_GET, [](AsyncWebServerRequest * request) {
+    request->send(SPIFFS, "/index.html");
+    remoteSlimer();
+  });
+
+  server.on("/wifi-settings", HTTP_GET, [](AsyncWebServerRequest * request) {
+    request->send(SPIFFS, "/wifimanager.html", "text/html", false, processor);
+  });
+
+  //  server.on("/wifi-settings", HTTP_POST, [](AsyncWebServerRequest *request) {
+  //      int params = request->params();
+  //      for(int i=0;i<params;i++){
+  //        AsyncWebParameter* p = request->getParam(i);
+  //        if(p->isPost()){
+  //          // HTTP POST ssid value
+  //          if (p->name() == SSID_INPUT) {
+  //            ssid = p->value().c_str();
+  //            Serial.print("SSID set to: ");
+  //            Serial.println(ssid);
+  //            // Write file to save value
+  //            writeFile(SPIFFS, ssidPath, ssid.c_str());
+  //          }
+  //          // HTTP POST pass value
+  //          if (p->name() == PASS_INPUT) {
+  //            pass = p->value().c_str();
+  //            Serial.print("Password set to: ");
+  //            Serial.println(pass);
+  //            // Write file to save value
+  //            writeFile(SPIFFS, passPath, pass.c_str());
+  //          }
+  //        }
+  //      }
+  //    //request->send(200, "text/plain", "Done. ESP will restart.");
+  //    request->send(200, "text/html", "<br><br><br><center><h1 style='font-size:4.7rem;'>SSID and Password Set!</h1><br><h1>SSID: <span style='color:blue;'>" + ssid + "</span><br>Password: <span style='color:blue;'>" + pass + "</span></h1></center><br><center><h1>You may now begin using these settings. You will see the above SSID in your list of available Wifi networks.</h1></center><br><center><h1 style='color:red;'><b>DON'T FORGET YOUR PASSWORD!<br>WRITE IT DOWN IF YOU HAVE TO!</b></h1></center><br><br><center>When you have written your username and password down, you may close this window</center>");
+  //    delay(3000);
+  //    ESP.restart();
+  //  });
+
+  // Route to set GPIO to LOW
+  server.on("/audio-settings", HTTP_GET, [](AsyncWebServerRequest * request) {
+    request->send(SPIFFS, "/audio-settings.html");
+  });
+
+  server.on("/traps-cleaned", HTTP_GET, [](AsyncWebServerRequest * request) {
+    request->send(SPIFFS, "/traps-cleaned.html", "text/html", false, processor2);
+  });
 
   // Trap Trigger and State
-  pinMode(TRAP_TRIGGER, INPUT_PULLUP);
+  //  pinMode(TRAP_TRIGGER, INPUT_PULLUP);
 
   // LED and Button Prep
-  pinMode(RED_LED_PIN, OUTPUT);
-  pinMode(RED_BUTTON_PIN, INPUT_PULLUP);
-  pinMode(YELLOW_LED_PIN, OUTPUT);
-  pinMode(YELLOW_BUTTON_PIN, INPUT_PULLUP);
-  pinMode(GREEN_LED_PIN, OUTPUT);
-  pinMode(GREEN_BUTTON_PIN, INPUT_PULLUP);
-  pinMode(MAIN_LEVER, INPUT_PULLUP);
-  pinMode(NEEDLE_GAUGE, OUTPUT);
-  
+  //  pinMode(RED_LED_PIN, OUTPUT);
+  //  pinMode(RED_BUTTON_PIN, INPUT_PULLUP);
+
+  RED_BUTTON_PIN.setDebounceTime(50);
+  YELLOW_BUTTON_PIN.setDebounceTime(50);
+  GREEN_BUTTON_PIN.setDebounceTime(50);
+
+  //  pinMode(YELLOW_LED_PIN, OUTPUT);
+  //  pinMode(YELLOW_BUTTON_PIN, INPUT_PULLUP);
+  //  pinMode(GREEN_LED_PIN, OUTPUT);
+  //  pinMode(GREEN_BUTTON_PIN, INPUT_PULLUP);
+  //  pinMode(MAIN_LEVER, INPUT_PULLUP);
+  //  pinMode(NEEDLE_GAUGE, OUTPUT);
+
   digitalWrite(RED_LED_PIN, HIGH);
   digitalWrite(YELLOW_LED_PIN, HIGH);
   digitalWrite(GREEN_LED_PIN, HIGH);
-//
+
   pinMode(TOP_GREEN_LED, OUTPUT);
   pinMode(TOP_RED_LED, OUTPUT);
-//
+
   digitalWrite(TOP_GREEN_LED, HIGH);
   digitalWrite(TOP_RED_LED, HIGH);
-//
-  pinMode(VENT_FAN_LIGHT, OUTPUT);
-  digitalWrite(VENT_FAN_LIGHT, LOW);
-//  pinMode(CUTOFF_PUMP, OUTPUT);
-//  digitalWrite(CUTOFF_PUMP, HIGH);
-//
-//  pinMode(TRAP_PUMP, OUTPUT);
-//  digitalWrite(TRAP_PUMP, HIGH);
+
+  //  pinMode(VENT_FAN_LIGHT, OUTPUT);
+  //  digitalWrite(VENT_FAN_LIGHT, LOW);
 
   // Cutoff Sequence
-  pinMode(CUTOFF_LEVER, INPUT_PULLUP);
+  //  pinMode(CUTOFF_LEVER, INPUT_PULLUP);
 
   // WAV Trigger startup at 57600
   wTrig.start();
@@ -239,7 +330,7 @@ void setup(){
   wTrig.stopAllTracks();
   wTrig.samplerateOffset(0);            // Reset our sample rate offset
   wTrig.masterGain(0);                  // Reset the master gain to 0dB
-  
+
   wTrig.trackLoad(1);
   wTrig.trackPlayPoly(1);               // Start Track 1
   wTrig.trackLoad(2);
@@ -249,122 +340,131 @@ void setup(){
   wTrig.trackFade(1, -40, 2000, 0);       // Fade Track 1 down to -40dB over 2 secs
   wTrig.trackFade(2, 0, 2000, 0);       // Fade Track 2 up to 0dB over 2 secs
   wTrig.update();                       // Wait 2 secs
-  wTrig.trackLoop(2, 1); 
-  Serial.println("ECU Ready"); 
+  wTrig.trackLoop(2, 1);
+  Serial.println("ECU Ready");
 
   // Start server
-  server.begin();   
+  server.begin();
 }
 
 void loop() {
-  
-//
-//  if(CUTOFF_LEVER.wasPressed()) {
-//    // Lever is pulled back up
-//  }
 
+  RED_BUTTON_PIN.loop();
+  YELLOW_BUTTON_PIN.loop();
+  GREEN_BUTTON_PIN.loop();
+
+  int redbtnState = RED_BUTTON_PIN.getState();
+  //  Serial.println(btnState);
+
+  if (RED_BUTTON_PIN.isPressed())
+    Serial.println("The button is pressed");
+
+  if (RED_BUTTON_PIN.isReleased())
+    Serial.println("The button is released");
+
+
+  //  if(CUTOFF_LEVER.wasPressed()) {
+  //    // Lever is pulled back up
+  //  }
 
   trapState = digitalRead(TRAP_TRIGGER);
 
-  if(lasttrapState == LOW && trapState == HIGH) {
+  if (lasttrapState == LOW && trapState == HIGH) {
     digitalWrite(GREEN_LED_PIN, LOW);
     Serial.println("TRAP INSERTED");
     wTrig.trackLoad(4);
-    wTrig.update(); 
+    wTrig.update();
     state = TRAP_INSERT;
   }
-  
+
   // save the last state
   lasttrapState = trapState;
-//
-//  switch (remoteVar) {
-//    case 0: // READY
-//      state = READY;
-//      break;
-//    case 1: // SHUTDOWN
-//      state = CUT_OFF_LEVER;
-//      break;
-//    case 2: // VENT
-//      ventProcess();
-//      break;
-//    case 3: // SLEEP
-//      state = SLEEP;
-//      
-//      break;
-//    case 4: // ECTO 1 SIREN
-//      wTrig.trackPlayPoly(12); // Start Ecto 1 siren
-//      wTrig.trackLoop(12, 1);
-//      wTrig.update(); 
-//      break;
-//    case 5: // SLIMER
-//      randNumber = random(5);
-//      remoteVar = 0;
-//      switch(randNumber) {
-//        case 0:
-//          wTrig.trackStop(14);
-//          wTrig.trackStop(15);
-//          wTrig.trackStop(16);
-//          wTrig.trackStop(17);
-//          wTrig.trackPlayPoly(13);
-//          break;
-//        case 1:
-//          wTrig.trackStop(13);
-//          wTrig.trackStop(15);
-//          wTrig.trackStop(16);
-//          wTrig.trackStop(17);
-//          wTrig.trackPlayPoly(14);
-//          break;
-//        case 2:
-//          wTrig.trackStop(13);
-//          wTrig.trackStop(14);
-//          wTrig.trackStop(16);
-//          wTrig.trackStop(17);
-//          wTrig.trackPlayPoly(15);
-//          break;
-//        case 3:
-//          wTrig.trackStop(13);
-//          wTrig.trackStop(14);
-//          wTrig.trackStop(15);
-//          wTrig.trackStop(17);
-//          wTrig.trackPlayPoly(16);
-//          break;
-//        case 4:
-//          wTrig.trackStop(13);
-//          wTrig.trackStop(14);
-//          wTrig.trackStop(15);
-//          wTrig.trackStop(16);
-//          wTrig.trackPlayPoly(17);
-//          break;
-//      }
-//      break;
-//  }
+
+  switch (remoteVar) {
+    case 0: // READY
+      state = READY;
+      break;
+    case 1: // SHUTDOWN
+      state = CUT_OFF_LEVER;
+      break;
+    case 2: // VENT
+      ventProcess();
+      break;
+    case 3: // SLEEP
+      state = SLEEP;
+
+      break;
+    case 4: // ECTO 1 SIREN
+      wTrig.trackPlayPoly(12); // Start Ecto 1 siren
+      wTrig.trackLoop(12, 1);
+      wTrig.update();
+      break;
+    case 5: // SLIMER
+      randNumber = random(5);
+      remoteVar = 0;
+      switch (randNumber) {
+        case 0:
+          wTrig.trackStop(14);
+          wTrig.trackStop(15);
+          wTrig.trackStop(16);
+          wTrig.trackStop(17);
+          wTrig.trackPlayPoly(13);
+          break;
+        case 1:
+          wTrig.trackStop(13);
+          wTrig.trackStop(15);
+          wTrig.trackStop(16);
+          wTrig.trackStop(17);
+          wTrig.trackPlayPoly(14);
+          break;
+        case 2:
+          wTrig.trackStop(13);
+          wTrig.trackStop(14);
+          wTrig.trackStop(16);
+          wTrig.trackStop(17);
+          wTrig.trackPlayPoly(15);
+          break;
+        case 3:
+          wTrig.trackStop(13);
+          wTrig.trackStop(14);
+          wTrig.trackStop(15);
+          wTrig.trackStop(17);
+          wTrig.trackPlayPoly(16);
+          break;
+        case 4:
+          wTrig.trackStop(13);
+          wTrig.trackStop(14);
+          wTrig.trackStop(15);
+          wTrig.trackStop(16);
+          wTrig.trackPlayPoly(17);
+          break;
+      }
+      break;
+  }
 
   switch (state) {
     case READY:
-      if (digitalRead(servoPin) == LOW) {
-        servo.write(750);
-      }
+      //      if (digitalRead(servoPin) == LOW) {
+      //        servo.write(750);
+      //      }
       Serial.println("READY");
-      wTrig.masterGain(0);
-      
-      digitalWrite(RED_LED_PIN, LOW);
+      //wTrig.masterGain(0);
+
+      digitalWrite(RED_LED_PIN, HIGH);
       digitalWrite(YELLOW_LED_PIN, LOW);
       digitalWrite(NEEDLE_GAUGE, HIGH);
-      
+
       digitalWrite(TOP_GREEN_LED, HIGH);
       digitalWrite(TOP_RED_LED, LOW);
       digitalWrite(GREEN_LED_PIN, HIGH);
 
-      digitalWrite(CUTOFF_PUMP, LOW);
-      digitalWrite(TRAP_PUMP, LOW);
-      
-      if(lasttrapState == LOW && trapState == HIGH) {
+      if (lasttrapState == LOW && trapState == HIGH) {
         digitalWrite(GREEN_LED_PIN, LOW);
         wTrig.trackLoad(4);
-        wTrig.update(); 
+        wTrig.update();
         state = TRAP_INSERT;
       }
-      
+
       // save the last state
       lasttrapState = trapState;
 
@@ -377,166 +477,160 @@ void loop() {
       if (trapState == HIGH) {
 
         wTrig.trackPlayPoly(4); // Start trap insert sound
-        wTrig.update(); 
+        wTrig.update();
         Serial.println("TRAP INSERTED");
         digitalWrite(TOP_GREEN_LED, LOW);
         digitalWrite(GREEN_LED_PIN, LOW);
         digitalWrite(TOP_RED_LED, HIGH);
-        digitalWrite(TRAP_PUMP, HIGH);
         delay(3000);
         state = RED_BTN_PREP;
       }
       break;
-    // Press the red button to start the ECU process  
+    // Press the red button to start the ECU process
     case RED_BTN_PREP:
-      digitalWrite(TRAP_PUMP, LOW);
-      Serial.println("RED BUTTON PREP");
-      if (digitalRead(RED_BUTTON_PIN) == LOW) {
-        
-      }
-      if (digitalRead(RED_BUTTON_PIN) == HIGH) {
+      //      Serial.println("RED BUTTON PREP");
+      if (RED_BUTTON_PIN.isPressed()) {
         wTrig.trackLoad(7);
         state = RED_BTN_PUSH;
       }
       detectShutdown();
       break;
-    // Once the red button is pressed, prep the yellow button 
+    // Once the red button is pressed, prep the yellow button
     case RED_BTN_PUSH:
-      if (digitalRead(RED_BUTTON_PIN) == HIGH) {
+      if (RED_BUTTON_PIN.isReleased()) {
         Serial.println("RED BUTTON PUSH");
         digitalWrite(RED_LED_PIN, HIGH);
         wTrig.trackFade(2, -2, 1000, 0);
         wTrig.trackGain(7, 2);
         wTrig.trackPlayPoly(7);
         wTrig.trackLoad(8);
-        wTrig.update(); 
+        wTrig.update();
         state = YELLOW_BTN_PREP;
       }
       break;
     // Continue on to press the yellow button
     case YELLOW_BTN_PREP:
-      if (digitalRead(YELLOW_BUTTON_PIN) == HIGH) {
-        state = YELLOW_BTN_PUSH;
-        Serial.println("YELLOW BUTTON PREP");
-      }
-      detectShutdown();
+      //      if (digitalRead(YELLOW_BUTTON_PIN) == HIGH) {
+      //        state = YELLOW_BTN_PUSH;
+      //        Serial.println("YELLOW BUTTON PREP");
+      //      }
+      //      detectShutdown();
       break;
-    // Once the yellow button is pressed, 
+    // Once the yellow button is pressed,
     case YELLOW_BTN_PUSH:
-      if (digitalRead(YELLOW_BUTTON_PIN) == HIGH) {
-        Serial.println("YELLOW BUTTON PUSH");
-        wTrig.trackFade(2, -2, 500, 0);
-        wTrig.trackFade(7, -2, 500, 0);
-        wTrig.update(); 
-        wTrig.trackGain(8, 5); 
-        wTrig.trackPlayPoly(8);
-        wTrig.update(); 
-        digitalWrite(RED_LED_PIN, LOW);
-        digitalWrite(YELLOW_LED_PIN, HIGH);
-        state = LEVER_PREP;
-      }
+      //      if (digitalRead(YELLOW_BUTTON_PIN) == HIGH) {
+      //        Serial.println("YELLOW BUTTON PUSH");
+      //        wTrig.trackFade(2, -2, 500, 0);
+      //        wTrig.trackFade(7, -2, 500, 0);
+      //        wTrig.update();
+      //        wTrig.trackGain(8, 5);
+      //        wTrig.trackPlayPoly(8);
+      //        wTrig.update();
+      //        digitalWrite(RED_LED_PIN, LOW);
+      //        digitalWrite(YELLOW_LED_PIN, HIGH);
+      //        state = LEVER_PREP;
+      //      }
       break;
     // The lever is ready to be pulled down
     case LEVER_PREP:
-      if (digitalRead(YELLOW_BUTTON_PIN) == HIGH) {
-        Serial.println("LEVER PREP");
-        state = LEVER_PUSH;
-        wTrig.trackLoad(3);
-      }
-      detectShutdown();
+      //      if (digitalRead(YELLOW_BUTTON_PIN) == HIGH) {
+      //        Serial.println("LEVER PREP");
+      //        state = LEVER_PUSH;
+      //        wTrig.trackLoad(3);
+      //      }
+      //      detectShutdown();
       break;
     // The lever has been pulled down
     case LEVER_PUSH:
-      if (digitalRead(GREEN_BUTTON_PIN) == HIGH || digitalRead(MAIN_LEVER) == HIGH) {
-        Serial.println("LEVER PUSH");
-        wTrig.trackStop(8);
-        wTrig.trackStop(7);
-        wTrig.update();
-        state = TRAP_CLEAN;
-      }
-      detectShutdown();
+      //      if (digitalRead(GREEN_BUTTON_PIN) == HIGH || digitalRead(MAIN_LEVER) == HIGH) {
+      //        Serial.println("LEVER PUSH");
+      //        wTrig.trackStop(8);
+      //        wTrig.trackStop(7);
+      //        wTrig.update();
+      //        state = TRAP_CLEAN;
+      //      }
+      //      detectShutdown();
       break;
     // The trap is clean and the system has reset
     case TRAP_CLEAN:
-      if (trapFlag == 0x00) {
-        Serial.println("TRAP CLEAN");
-        digitalWrite(GREEN_LED_PIN, HIGH);
-        wTrig.trackFade(2, 0, 1000, 0);
-        wTrig.trackGain(3, 10);
-        wTrig.trackPlayPoly(3);
-        wTrig.trackFade(4, 0, 2000, 0);
-        wTrig.update();
-        trapFlag = 0x01;
-      }
+      //      if (trapFlag == 0x00) {
+      //        Serial.println("TRAP CLEAN");
+      //        digitalWrite(GREEN_LED_PIN, HIGH);
+      //        wTrig.trackFade(2, 0, 1000, 0);
+      //        wTrig.trackGain(3, 10);
+      //        wTrig.trackPlayPoly(3);
+      //        wTrig.trackFade(4, 0, 2000, 0);
+      //        wTrig.update();
+      //        trapFlag = 0x01;
+      //      }
 
       // The Main lever must be pulled back up to reset the system
-      if (digitalRead(MAIN_LEVER) == LOW) {
-        digitalWrite(YELLOW_LED_PIN, LOW);
-        digitalWrite(RED_LED_PIN, LOW);
-        digitalWrite(TRAP_TRIGGER, LOW);
-        digitalWrite(TOP_GREEN_LED, HIGH);
-        digitalWrite(GREEN_LED_PIN, HIGH);
-        delay(10000);
-        state = READY;
-      }
-      detectShutdown();
+      //      if (digitalRead(MAIN_LEVER) == LOW) {
+      //        digitalWrite(YELLOW_LED_PIN, LOW);
+      //        digitalWrite(RED_LED_PIN, LOW);
+      //        digitalWrite(TRAP_TRIGGER, LOW);
+      //        digitalWrite(TOP_GREEN_LED, HIGH);
+      //        digitalWrite(GREEN_LED_PIN, HIGH);
+      //        delay(10000);
+      //        state = READY;
+      //      }
+      //      detectShutdown();
       break;
     // This is the start of the shutdown process. You can
     // get to this step from anywhere in the process.
     case CUT_OFF_LEVER:
-        if (shutdownstate == 0) {
-          
-          digitalWrite(GREEN_LED_PIN, LOW);
-          digitalWrite(RED_LED_PIN, HIGH);
-          digitalWrite(TOP_GREEN_LED, LOW);
+      if (shutdownstate == 0) {
 
-          unsigned long NEEDLEcurrentMillis = millis();
-      
-          if (NEEDLEcurrentMillis - NEEDLEpreviousMillis >= 100) {
+        digitalWrite(GREEN_LED_PIN, LOW);
+        digitalWrite(RED_LED_PIN, HIGH);
+        digitalWrite(TOP_GREEN_LED, LOW);
+
+        unsigned long NEEDLEcurrentMillis = millis();
+
+        if (NEEDLEcurrentMillis - NEEDLEpreviousMillis >= 100) {
           // save the last time you blinked the LED
           NEEDLEpreviousMillis = NEEDLEcurrentMillis;
-      
-            // if the LED is off turn it on and vice-versa:
-            if (needleState == LOW) {
-              needleState = HIGH;
-            } else {
-              needleState = LOW;
-            }
-            digitalWrite(NEEDLE_GAUGE, needleState);
+
+          // if the LED is off turn it on and vice-versa:
+          if (needleState == LOW) {
+            needleState = HIGH;
+          } else {
+            needleState = LOW;
           }
-      
-          REDTOPcurrentMillis = millis();
-          
-          if (REDTOPcurrentMillis - REDTOPpreviousMillis >= 515) {
-            REDTOPpreviousMillis = REDTOPcurrentMillis;
-            if (topRedLEDState == LOW) {
-              topRedLEDState = HIGH;
-            } else {
-              topRedLEDState = LOW;
-            }
-            digitalWrite(TOP_RED_LED, topRedLEDState); 
-          }
-          
-          if (currentMillis - previousMillis >= interval) {
-            count++;       
-            previousMillis = currentMillis;
-          }
+          digitalWrite(NEEDLE_GAUGE, needleState);
         }
+
+        REDTOPcurrentMillis = millis();
+
+        if (REDTOPcurrentMillis - REDTOPpreviousMillis >= 515) {
+          REDTOPpreviousMillis = REDTOPcurrentMillis;
+          if (topRedLEDState == LOW) {
+            topRedLEDState = HIGH;
+          } else {
+            topRedLEDState = LOW;
+          }
+          digitalWrite(TOP_RED_LED, topRedLEDState);
+        }
+
+        if (currentMillis - previousMillis >= interval) {
+          count++;
+          previousMillis = currentMillis;
+        }
+      }
       switch (count) {
         case 0:
           // Run the vent PUMP
-          digitalWrite(CUTOFF_PUMP, HIGH);
           currentMillis = millis();
-          break;            
+          break;
         case 1:
           currentMillis = millis();
           break;
         case 2:
           // Turn the PUMP off
           // Open the Vent
-          if (digitalRead(servoPin) == LOW) {
-            servo.write(1500);
-          }
+          //          if (digitalRead(servoPin) == LOW) {
+          //            servo.write(1500);
+          //          }
           // Turn the fan on
           Serial.println("SHUT DOWN 2");
           digitalWrite(VENT_FAN_LIGHT, HIGH);
@@ -545,10 +639,9 @@ void loop() {
         case 3:
           Serial.println("SHUT DOWN 3");
           currentMillis = millis();
-          
+
           // Turn the fan off but leave vent open
           digitalWrite(VENT_FAN_LIGHT, LOW);
-          digitalWrite(CUTOFF_PUMP, LOW);
           wTrig.trackFade(11, -40, 1000, 0);
           break;
         case 4:
@@ -556,10 +649,10 @@ void loop() {
           currentMillis = millis();
           shutdownstate = 1;
           break;
-     }      
-      if(shutdownstate == 1) {
+      }
+      if (shutdownstate == 1) {
         state = ECU_OFF;
-        wTrig.trackLoad(1);          
+        wTrig.trackLoad(1);
         wTrig.trackLoad(2);
         wTrig.trackLoad(9);
         wTrig.trackLoad(10);
@@ -571,55 +664,53 @@ void loop() {
       break;
     case ECU_OFF:
       Serial.println("ECU IS OFF");
-      
-      digitalWrite(TOP_RED_LED, LOW);
-      digitalWrite(NEEDLE_GAUGE, LOW);
-
-      currentMillis = millis();
-             
-      // Flash red button and play click
-      if (currentMillis - previousMillis >= 600) {
-        previousMillis = currentMillis;
-        if (ledState == LOW) {
-          ledState = HIGH;
-          wTrig.trackPlayPoly(9);
-        } else {
-          ledState = LOW;
-          wTrig.trackPlayPoly(10);
-        }
-        digitalWrite(RED_LED_PIN, ledState);
-      }
-      
-      // If maincut off lever is back up, system will reset.
-      if(digitalRead(CUTOFF_LEVER) == LOW) {
-        wTrig.trackPlayPoly(1);
-        wTrig.update();
-        wTrig.trackPlayPoly(2);
-        wTrig.trackFade(2, 0, 5000, 0);       // Fade Track 2 up to 0dB over 7 secs
-        wTrig.update();                       // Wait 2 secs
-        wTrig.trackLoop(2, 1);
-        shutdownstate = 0;
-        count = 0;
-        trapFlag = 0x00;
-        state = READY;
-      }
+      //
+      //      digitalWrite(TOP_RED_LED, LOW);
+      //      digitalWrite(NEEDLE_GAUGE, LOW);
+      //
+      //      currentMillis = millis();
+      //
+      //      // Flash red button and play click
+      //      if (currentMillis - previousMillis >= 600) {
+      //        previousMillis = currentMillis;
+      //        if (ledState == LOW) {
+      //          ledState = HIGH;
+      //          wTrig.trackPlayPoly(9);
+      //        } else {
+      //          ledState = LOW;
+      //          wTrig.trackPlayPoly(10);
+      //        }
+      //        digitalWrite(RED_LED_PIN, ledState);
+      //      }
+      //
+      //      // If maincut off lever is back up, system will reset.
+      //      if(digitalRead(CUTOFF_LEVER) == LOW) {
+      //        wTrig.trackPlayPoly(1);
+      //        wTrig.update();
+      //        wTrig.trackPlayPoly(2);
+      //        wTrig.trackFade(2, 0, 5000, 0);       // Fade Track 2 up to 0dB over 7 secs
+      //        wTrig.update();                       // Wait 2 secs
+      //        wTrig.trackLoop(2, 1);
+      //        shutdownstate = 0;
+      //        count = 0;
+      //        trapFlag = 0x00;
+      //        state = READY;
+      //      }
       break;
     case SLEEP:
-//      digitalWrite(RED_LED_PIN, LOW);
-//      digitalWrite(YELLOW_LED_PIN, LOW);
-//      digitalWrite(GREEN_LED_PIN, LOW);
-//      digitalWrite(TOP_GREEN_LED, LOW);
-//      digitalWrite(TOP_RED_LED, LOW);
-//      digitalWrite(VENT_FAN_LIGHT, LOW);
-//      digitalWrite(CUTOFF_PUMP, LOW);
-//      digitalWrite(TRAP_PUMP, LOW);
-      wTrig.stopAllTracks();
+      //      digitalWrite(RED_LED_PIN, LOW);
+      //      digitalWrite(YELLOW_LED_PIN, LOW);
+      //      digitalWrite(GREEN_LED_PIN, LOW);
+      //      digitalWrite(TOP_GREEN_LED, LOW);
+      //      digitalWrite(TOP_RED_LED, LOW);
+      //      digitalWrite(VENT_FAN_LIGHT, LOW);
+      //      wTrig.stopAllTracks();
       break;
   }
 }
 
-void detectShutdown(){
-  if(digitalRead(CUTOFF_LEVER) == HIGH) {
+void detectShutdown() {
+  if (digitalRead(CUTOFF_LEVER) == HIGH) {
     // Lever is pulled down
     shutDown();
     state = CUT_OFF_LEVER;
@@ -628,14 +719,14 @@ void detectShutdown(){
 }
 
 void shutDown() {
-  
+
   // Shutdown sequence sounds
   wTrig.stopAllTracks();
   wTrig.update();
-  wTrig.trackLoad(5); 
+  wTrig.trackLoad(5);
   wTrig.trackLoad(11);
   wTrig.trackGain(5, 10);
-  wTrig.trackGain(11, 10); 
+  wTrig.trackGain(11, 10);
   wTrig.trackPlayPoly(5);
   wTrig.trackPlayPoly(11);
 }
@@ -664,10 +755,14 @@ void remoteSlimer() {
   remoteVar = 5;
 }
 
-void ventProcess(){
+void remoteAlarm() {
+  remoteVar = 6;
+}
+
+void ventProcess() {
   wTrig.trackLoad(18);
-  wTrig.trackGain(18, 10); 
+  wTrig.trackGain(18, 10);
   wTrig.trackPlayPoly(18);
-//  servo.write(1500);
+  //  servo.write(1500);
   //insert fan turn on, pump, and smoker
 }
